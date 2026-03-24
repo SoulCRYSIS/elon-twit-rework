@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from approaches.position_context import aggregate_bracket_position
+from shared import progress_log
 
 DATA_DIR = ROOT / "data"
 BOT_DIR = ROOT / "bot"
@@ -64,7 +65,7 @@ def load_state(live: bool) -> dict:
             state = json.load(f)
         _ensure_state_shape(state, live=False)
         save_state(False, state)
-        print(f"Migrated {LEGACY_STATE_PATH} -> {STATE_DRY_PATH}")
+        progress_log("bot", f"migrated {LEGACY_STATE_PATH.name} → {STATE_DRY_PATH.name}")
         return state
 
     state = _fresh_state(live)
@@ -109,27 +110,29 @@ def save_state(live: bool, state: dict) -> None:
 
 def run_daily_training() -> bool:
     """Fetch latest data + retrain XGBoost artifacts."""
-    print("Daily training: fetch_data + train_ml_model...")
+    progress_log(
+        "bot",
+        "daily_train | steps: (1) scripts/fetch_data.py (2) scripts/train_ml_model.py — child logs follow",
+    )
     try:
+        progress_log("bot", "daily_train 1/2: fetch_data.py …")
         r1 = subprocess.run(
-            [sys.executable, str(ROOT / "scripts" / "fetch_data.py"), "--refresh"],
+            [sys.executable, str(ROOT / "scripts" / "fetch_data.py")],
             cwd=str(ROOT),
             timeout=900,
-            capture_output=True,
-            text=True,
         )
         if r1.returncode != 0:
-            print(f"  fetch_data failed: {r1.stderr[-500:]!s}")
+            progress_log("bot", "daily_train 1/2: fetch_data.py failed (non-zero exit).")
             return False
+        progress_log("bot", "daily_train 1/2: fetch_data.py finished OK.")
+        progress_log("bot", "daily_train 2/2: train_ml_model.py …")
         r2 = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "train_ml_model.py")],
             cwd=str(ROOT),
             timeout=600,
-            capture_output=True,
-            text=True,
         )
         if r2.returncode != 0:
-            print(f"  train_ml_model failed: {r2.stderr[-500:]!s}")
+            progress_log("bot", "daily_train 2/2: train_ml_model.py failed (non-zero exit).")
             return False
         try:
             from approaches.approach_xgboost import clear_cache as xgb_clear_cache
@@ -137,10 +140,11 @@ def run_daily_training() -> bool:
             xgb_clear_cache()
         except Exception:
             pass
-        print("  Daily training completed.")
+        progress_log("bot", "daily_train 2/2: train_ml_model.py finished OK — xgboost cache cleared.")
+        progress_log("bot", "daily_train: complete.")
         return True
     except Exception as e:
-        print(f"  Daily training error: {e}")
+        progress_log("bot", f"daily_train: error — {e}")
         return False
 
 
@@ -236,10 +240,10 @@ def run_loop(live: bool, approach: str) -> None:
         from bot.live_executor import live_configured, missing_live_env
 
         if not live_configured():
-            print("ERROR: --live requires environment variables:")
+            progress_log("bot", "ERROR: --live requires environment variables:")
             for k in missing_live_env():
-                print(f"  {k}")
-            print("See bot/live_executor.py docstring and bot/README.md")
+                progress_log("bot", f"  {k}")
+            progress_log("bot", "See bot/live_executor.py docstring and bot/README.md")
             sys.exit(1)
 
     get_signal = get_approach(approach)
@@ -247,9 +251,10 @@ def run_loop(live: bool, approach: str) -> None:
     state["approach"] = approach
 
     mode = "LIVE" if live else "DRY-RUN"
-    print(
-        f"Bot started [{mode}] approach={approach} balance=${float(state['balance']):.2f} "
-        f"positions={len(state.get('positions', []))} state={state_path(live)}"
+    progress_log(
+        "bot",
+        f"loop start [{mode}] approach={approach} balance=${float(state['balance']):.2f} "
+        f"open_positions={len(state.get('positions', []))}/{MAX_OPEN_POSITIONS} state={state_path(live)}",
     )
 
     while True:
@@ -296,12 +301,12 @@ def run_loop(live: bool, approach: str) -> None:
                         buy_ts=buy_ts,
                     )
                     state["positions"].remove(pos)
-                    print(f"  Resolved {pos['bracket']} @ {resolved_price:.2f}, PnL=${pnl:.2f}")
+                    progress_log("bot", f"  resolved {pos['bracket']} @ {resolved_price:.2f} PnL=${pnl:.2f}")
                     break
 
         events = fetch_active_events()
         if not events:
-            print("No active 7-day tweet events. Waiting...")
+            progress_log("bot", f"poll: no active 7-day tweet events — sleep {POLL_INTERVAL_SEC}s …")
             save_state(live, state)
             time.sleep(POLL_INTERVAL_SEC)
             continue
@@ -382,7 +387,7 @@ def run_loop(live: bool, approach: str) -> None:
                                 float(pos["shares"]),
                             )
                             if not res.ok:
-                                print(f"  LIVE SELL failed {bracket}: {res.message}")
+                                progress_log("bot", f"  LIVE SELL failed {bracket}: {res.message}")
                                 continue
                         state["balance"] = float(state["balance"]) + pnl
                         _append_trade(
@@ -396,7 +401,7 @@ def run_loop(live: bool, approach: str) -> None:
                             extra={"live_fill": live},
                         )
                         state["positions"].pop(i)
-                        print(f"  Sold {bracket} @ {current_price:.3f}, PnL=${pnl:.2f}")
+                        progress_log("bot", f"  sold {bracket} @ {current_price:.3f} PnL=${pnl:.2f}")
 
                 if signal.buy and float(state["balance"]) >= AVG_POSITION_USD and current_price >= 0.01:
                     if len(state["positions"]) >= MAX_OPEN_POSITIONS:
@@ -423,7 +428,7 @@ def run_loop(live: bool, approach: str) -> None:
 
                         res = market_buy_yes(str(token_id), float(current_price), float(shares))
                         if not res.ok:
-                            print(f"  LIVE BUY failed {bracket}: {res.message}")
+                            progress_log("bot", f"  LIVE BUY failed {bracket}: {res.message}")
                             continue
 
                     state["balance"] = float(state["balance"]) - size
@@ -450,12 +455,13 @@ def run_loop(live: bool, approach: str) -> None:
                         pnl=-size,
                         buy_ts=buy_iso,
                     )
-                    print(f"  Bought {bracket} @ {current_price:.3f}, ${size:.2f}")
+                    progress_log("bot", f"  bought {bracket} @ {current_price:.3f} size=${size:.2f}")
 
         save_state(live, state)
-        print(
-            f"  [{mode}] Balance: ${float(state['balance']):.2f}, "
-            f"Open positions: {len(state['positions'])}/{MAX_OPEN_POSITIONS}"
+        progress_log(
+            "bot",
+            f"poll end [{mode}] balance=${float(state['balance']):.2f} "
+            f"open_positions={len(state['positions'])}/{MAX_OPEN_POSITIONS} — sleep {POLL_INTERVAL_SEC}s",
         )
         time.sleep(POLL_INTERVAL_SEC)
 
@@ -482,7 +488,7 @@ def main():
 
     live = args.live
     if live:
-        print("WARNING: LIVE mode — real funds at risk. State:", STATE_LIVE_PATH)
+        progress_log("bot", f"WARNING: LIVE mode — real funds at risk. State: {STATE_LIVE_PATH}")
     run_loop(live=live, approach=args.approach)
 
 

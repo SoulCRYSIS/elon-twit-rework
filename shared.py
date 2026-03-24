@@ -3,6 +3,21 @@
 import re
 
 
+def progress_log(
+    script_id: str,
+    message: str,
+    *,
+    step: int | None = None,
+    total: int | None = None,
+) -> None:
+    """Print one grep-friendly line: ``[script_id]`` or ``[script_id step/total]``."""
+    if step is not None and total is not None and total > 0:
+        prefix = f"[{script_id} {step}/{total}]"
+    else:
+        prefix = f"[{script_id}]"
+    print(f"{prefix} {message}", flush=True)
+
+
 def extract_bracket_range(question: str) -> str | None:
     """Extract bracket range from market question."""
     m = re.search(r"(\d+)\s*[-–]\s*(\d+)", question)

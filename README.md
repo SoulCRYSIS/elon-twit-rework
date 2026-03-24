@@ -13,7 +13,8 @@ pip install -r requirements.txt
 ### 1. Fetch Data
 
 ```bash
-python scripts/fetch_data.py --refresh
+python scripts/fetch_data.py              # default: refresh Gamma + incremental CLOB (only new price points)
+python scripts/fetch_data.py --refresh    # full re-download of all price history
 ```
 
 Use `--max-tokens N` to limit price history fetch for faster runs. Omit for full data.

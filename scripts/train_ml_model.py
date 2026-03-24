@@ -39,6 +39,9 @@ from approaches.ml_training_data import (  # noqa: E402
     hist_winning_mid,
     temporal_event_ids,
 )
+from shared import progress_log  # noqa: E402
+
+TRAIN_PHASES = 6
 
 
 def target_correlations(df: pd.DataFrame, cols: list[str]) -> pd.Series:
@@ -120,38 +123,57 @@ def main():
     args = parser.parse_args()
 
     if not (DATA_DIR / "events.parquet").exists():
-        print("Missing data/*.parquet — run scripts/fetch_data.py --refresh")
+        progress_log("train_ml_model", "missing data/*.parquet — run scripts/fetch_data.py first.")
         sys.exit(1)
 
+    progress_log(
+        "train_ml_model",
+        "start | phases: (1) load (2) build dataset (3) split (4) feature stats (5) train (6) write artifacts",
+    )
     events = pd.read_parquet(DATA_DIR / "events.parquet")
     markets = pd.read_parquet(DATA_DIR / "markets.parquet")
     prices = pd.read_parquet(DATA_DIR / "price_history.parquet")
 
     events_7d = filter_seven_day_events(events)
-    print(f"Closed 7-day+ events: {len(events_7d)} (shorter horizons excluded from training)")
+    progress_log(
+        "train_ml_model",
+        f"7-day+ closed events: {len(events_7d)} (shorter horizons excluded)",
+        step=1,
+        total=TRAIN_PHASES,
+    )
 
     hmid = hist_winning_mid(events_7d, markets)
     sample_fracs = np.linspace(0.08, 0.92, 12)
     df = build_training_dataframe(events_7d, markets, prices, sample_fracs, hmid)
-    print(f"Dataset rows: {len(df)} (event×time×bracket samples)")
+    progress_log(
+        "train_ml_model",
+        f"training table: {len(df):,} rows (event×time×bracket)",
+        step=2,
+        total=TRAIN_PHASES,
+    )
 
     if len(df) < 80:
-        print("Too few rows for stable training.")
+        progress_log("train_ml_model", "too few rows for stable training (need ≥80).")
         sys.exit(1)
 
     train_ids, val_ids, test_ids = temporal_event_ids(df, args.train_frac, args.val_frac)
     tr = df[df["event_id"].isin(train_ids)]
     va = df[df["event_id"].isin(val_ids)]
     te = df[df["event_id"].isin(test_ids)]
-    print(f"Split — train events {len(train_ids)}, val {len(val_ids)}, test {len(test_ids)}")
-    print(f"Rows — train {len(tr)}, val {len(va)}, test {len(te)}")
+    progress_log(
+        "train_ml_model",
+        f"temporal split | events train={len(train_ids)} val={len(val_ids)} test={len(test_ids)} "
+        f"| rows train={len(tr)} val={len(va)} test={len(te)}",
+        step=3,
+        total=TRAIN_PHASES,
+    )
 
     candidates = list(ALL_FEATURE_KEYS)
     cy = target_correlations(tr, candidates)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     cy.to_frame(name="corr_with_target").to_csv(RESULTS_DIR / "feature_target_correlation_train.csv")
 
-    print("\nFeature vs target (Pearson on train), sorted by |corr|:")
+    progress_log("train_ml_model", "feature vs target (Pearson, train), |corr| descending:", step=4, total=TRAIN_PHASES)
     print(cy.to_string())
 
     if args.analyze_only:
@@ -160,7 +182,12 @@ def main():
         cm.max(axis=1).sort_values(ascending=False).to_frame(name="max_abs_corr_other").to_csv(
             RESULTS_DIR / "feature_max_pairwise_corr_train.csv"
         )
-        print("\nWrote results/feature_target_correlation_train.csv and feature_max_pairwise_corr_train.csv")
+        progress_log(
+            "train_ml_model",
+            "analyze-only: wrote feature_target_correlation_train.csv + feature_max_pairwise_corr_train.csv — done.",
+            step=6,
+            total=TRAIN_PHASES,
+        )
         return
 
     y_tr = tr["resolved_yes"]
@@ -175,10 +202,14 @@ def main():
             continue
         active.append(c)
     selected = active
-    print(f"\nSelected {len(selected)} features (after redundancy + variance filter):")
-    print(selected)
+    progress_log(
+        "train_ml_model",
+        f"selected {len(selected)} features (redundancy + variance): {selected}",
+        step=5,
+        total=TRAIN_PHASES,
+    )
     if len(selected) < 4:
-        print("Too few features after filtering.")
+        progress_log("train_ml_model", "too few features after filtering (need ≥4).")
         sys.exit(1)
 
     scaler = StandardScaler()
@@ -194,7 +225,7 @@ def main():
     try:
         import xgboost as xgb
     except ImportError:
-        print("pip install xgboost")
+        progress_log("train_ml_model", "missing dependency: pip install xgboost")
         sys.exit(1)
 
     eval_set = [(X_va, va["resolved_yes"])] if len(va) >= 10 else None
@@ -216,6 +247,7 @@ def main():
         random_state=42,
         eval_metric="logloss",
     )
+    progress_log("train_ml_model", "fitting XGBClassifier…", step=5, total=TRAIN_PHASES)
     model.fit(X_tr, y_tr, **fit_kw)
 
     def report(name: str, X, part: pd.DataFrame):
@@ -230,9 +262,9 @@ def main():
         except ValueError:
             ap = float("nan")
         br = brier_score_loss(y, p)
-        print(f"  {name}: ROC-AUC={auc:.4f} PR-AUC={ap:.4f} Brier={br:.4f}")
+        progress_log("train_ml_model", f"  {name}: ROC-AUC={auc:.4f} PR-AUC={ap:.4f} Brier={br:.4f}")
 
-    print("\nMetrics:")
+    progress_log("train_ml_model", "metrics:", step=5, total=TRAIN_PHASES)
     report("train", X_tr, tr)
     report("val  ", X_va, va)
     report("test ", X_te, te)
@@ -247,8 +279,12 @@ def main():
         max_market_price=0.5,
     )
     buys_va = ((probs_va - va["current_price"].values) >= edge_t) & (va["current_price"].values < 0.5)
-    print(f"\nTuned edge threshold (val): {edge_t:.4f}")
-    print(f"Val buy rate: {buys_va.mean():.2%} ({buys_va.sum()} / {len(va)} rows)")
+    progress_log(
+        "train_ml_model",
+        f"tuned edge threshold (val)={edge_t:.4f} | val buy rate={buys_va.mean():.2%} ({buys_va.sum()}/{len(va)} rows)",
+        step=5,
+        total=TRAIN_PHASES,
+    )
 
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     joblib.dump(model, ARTIFACT_DIR / "xgb_model.joblib")
@@ -271,8 +307,12 @@ def main():
     with open(ARTIFACT_DIR / "meta.json", "w") as f:
         json.dump(meta, f, indent=2)
 
-    print(f"\nWrote {ARTIFACT_DIR / 'xgb_model.joblib'} and meta.json")
-    print("Next: python scripts/run_backtest.py")
+    progress_log(
+        "train_ml_model",
+        f"wrote data/ml_artifacts/xgb_model.joblib + meta.json — done. Next: python scripts/run_backtest.py",
+        step=6,
+        total=TRAIN_PHASES,
+    )
 
 
 if __name__ == "__main__":

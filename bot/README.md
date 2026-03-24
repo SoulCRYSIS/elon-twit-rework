@@ -12,7 +12,7 @@ python bot/bot.py
 
 - **State**: `bot/state_dry.json` — balance, open positions, `trade_history`, retrain date. Survives restarts.
 - **Approach**: `xgboost` (default).
-- **Training refresh**: once per **local calendar day** (first loop after midnight runs `fetch_data.py --refresh` and `train_ml_model.py`).
+- **Training refresh**: once per **local calendar day** (runs `fetch_data.py` — incremental CLOB prices by default — then `train_ml_model.py`).
 - **Max positions**: 20.
 - **Starting cash**: $100 (dry-run ledger).
 

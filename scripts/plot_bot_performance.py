@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -19,7 +20,11 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from shared import progress_log  # noqa: E402
+
 STATE_DRY = ROOT / "bot" / "state_dry.json"
+PLOT_BOT_PHASES = 3
 STATE_LIVE = ROOT / "bot" / "state_live.json"
 LEGACY = ROOT / "bot" / "state.json"
 RESULTS = ROOT / "results"
@@ -55,9 +60,13 @@ def main():
     else:
         path = STATE_DRY if STATE_DRY.exists() else LEGACY
 
+    progress_log(
+        "plot_bot_performance",
+        "start | phases: (1) load state (2) build figures (3) save PNGs",
+    )
     state = load_state(path)
     if not state:
-        print(f"No state at {path}. Run the bot first.")
+        progress_log("plot_bot_performance", f"no state at {path} — run the bot first.")
         return
 
     mode = "live" if args.live or "live" in path.name else "dry"
@@ -66,6 +75,12 @@ def main():
     initial = float(state.get("initial_balance", 100))
 
     RESULTS.mkdir(parents=True, exist_ok=True)
+    progress_log(
+        "plot_bot_performance",
+        f"loaded {path.name} | mode={mode} trades={len(th)} balance=${balance:.2f}",
+        step=1,
+        total=PLOT_BOT_PHASES,
+    )
 
     # --- Equity over time: reconstruct from trade_history cumulative + show current balance ---
     rows = []
@@ -83,7 +98,12 @@ def main():
         )
     df = pd.DataFrame(rows)
     if len(df) == 0:
-        print("No trades with timestamps. Plotting balance point only.")
+        progress_log(
+            "plot_bot_performance",
+            "no trades with timestamps — single balance plot only.",
+            step=2,
+            total=PLOT_BOT_PHASES,
+        )
         fig, ax = plt.subplots(figsize=(10, 4))
         ax.axhline(initial, color="gray", linestyle="--", label="Start $100")
         ax.axhline(balance, color="blue", linewidth=2, label=f"Cash now ${balance:.2f}")
@@ -93,11 +113,12 @@ def main():
         out = RESULTS / f"bot_equity_{mode}.png"
         plt.tight_layout()
         plt.savefig(out, dpi=150)
-        print(f"Saved {out}")
+        progress_log("plot_bot_performance", f"wrote {out} — done.", step=3, total=PLOT_BOT_PHASES)
         if not args.no_show:
             plt.show()
         return
 
+    progress_log("plot_bot_performance", "building equity + closed-trade panels…", step=2, total=PLOT_BOT_PHASES)
     df = df.sort_values("event_ts")
     df["cum_pnl"] = df["pnl"].cumsum()
     df["equity_from_trades"] = initial + df["cum_pnl"]
@@ -155,7 +176,7 @@ def main():
     plt.tight_layout()
     out_eq = RESULTS / f"bot_equity_{mode}.png"
     plt.savefig(out_eq, dpi=150)
-    print(f"Saved {out_eq}")
+    progress_log("plot_bot_performance", f"wrote {out_eq} — done.", step=3, total=PLOT_BOT_PHASES)
     if not args.no_show:
         plt.show()
 

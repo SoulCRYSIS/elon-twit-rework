@@ -18,8 +18,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from approaches.position_context import aggregate_bracket_position
+from shared import progress_log
 
 DATA_DIR = ROOT / "data"
+RUN_BT_PHASES = 4
 RESULTS_DIR = ROOT / "results"
 STEP_HOURS = 6
 POSITION_SIZE_USD = 1.0
@@ -272,29 +274,48 @@ def main():
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     if not (DATA_DIR / "events.parquet").exists():
-        print("Run scripts/fetch_data.py --refresh first to fetch data.")
+        progress_log("run_backtest", "missing data/events.parquet — run scripts/fetch_data.py first.")
         sys.exit(1)
 
-    print("Loading data...")
+    progress_log(
+        "run_backtest",
+        "start | phases: (1) load (2) backtest each approach (3) write outputs (4) summary",
+    )
     events, markets, prices = load_data()
     if args.max_events > 0:
         closed_ids = events[events["closed"] == True]["event_id"].head(args.max_events).tolist()
         events = events[events["event_id"].isin(closed_ids)]
         markets = markets[markets["event_id"].isin(closed_ids)]
-        print(f"  Limited to {len(closed_ids)} events")
-    print(f"  Events: {len(events)}, Markets: {len(markets)}, Price rows: {len(prices)}")
+    progress_log(
+        "run_backtest",
+        f"loaded data | events={len(events)} markets={len(markets)} price_rows={len(prices):,}"
+        + (f" (subset --max-events={args.max_events})" if args.max_events > 0 else ""),
+        step=1,
+        total=RUN_BT_PHASES,
+    )
 
     from approaches import APPROACHES
 
     names = [x.strip() for x in args.approaches.split(",") if x.strip()] if args.approaches else list(APPROACHES)
     for n in names:
         if n not in APPROACHES:
-            print(f"Unknown approach: {n}")
+            progress_log("run_backtest", f"unknown approach: {n}")
             sys.exit(1)
 
+    progress_log(
+        "run_backtest",
+        f"running {len(names)} approach(es): {', '.join(names)}",
+        step=2,
+        total=RUN_BT_PHASES,
+    )
     summary = {}
-    for name in names:
-        print(f"\nBacktesting {name}...")
+    for i, name in enumerate(names, start=1):
+        progress_log(
+            "run_backtest",
+            f"backtest {i}/{len(names)}: {name}",
+            step=2,
+            total=RUN_BT_PHASES,
+        )
         result = run_backtest_for_approach(
             name, events, markets, prices,
             cooldown_hours=args.cooldown_hours,
@@ -310,15 +331,29 @@ def main():
         }
         # Save per-approach trade log
         pd.DataFrame(result["trades"]).to_csv(RESULTS_DIR / f"backtest_{name}.csv", index=False)
-        print(f"  Trades: {result['total_trades']}, Avg PnL: {result['avg_profit_per_trade']:.4f}, Win rate: {result['win_rate']:.2%}")
+        progress_log(
+            "run_backtest",
+            f"  → {name}: trades={result['total_trades']} avg_pnl={result['avg_profit_per_trade']:.4f} win_rate={result['win_rate']:.2%}",
+            step=2,
+            total=RUN_BT_PHASES,
+        )
 
     with open(RESULTS_DIR / "backtest_summary.json", "w") as f:
         json.dump(summary, f, indent=2)
 
-    print("\n--- Summary ---")
+    progress_log(
+        "run_backtest",
+        f"wrote results/backtest_summary.json + backtest_<approach>.csv under {RESULTS_DIR}",
+        step=3,
+        total=RUN_BT_PHASES,
+    )
+    progress_log("run_backtest", "summary (by avg profit per trade, descending):", step=4, total=RUN_BT_PHASES)
     for name, s in sorted(summary.items(), key=lambda x: -x[1]["avg_profit_per_trade"]):
-        print(f"  {name}: avg_profit={s['avg_profit_per_trade']:.4f}, trades={s['total_trades']}, win_rate={s['win_rate']:.2%}")
-    print(f"\nResults saved to {RESULTS_DIR}")
+        progress_log(
+            "run_backtest",
+            f"  {name}: avg_profit={s['avg_profit_per_trade']:.4f} trades={s['total_trades']} win_rate={s['win_rate']:.2%}",
+        )
+    progress_log("run_backtest", "done.")
 
 
 if __name__ == "__main__":
