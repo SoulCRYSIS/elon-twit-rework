@@ -1,10 +1,26 @@
 {
   "xgboost": {
-    "total_trades": 2,
-    "win_rate": 0.5,
-    "avg_profit_per_trade": 0.7857142857142856,
-    "total_pnl": 1.5714285714285712,
-    "max_drawdown": 0.0,
-    "sharpe": 2.243568585980825
+    "total_trades": 496,
+    "win_rate": 0.2056451612903226,
+    "avg_profit_per_trade": 1.344291826941784,
+    "total_pnl": 666.7687461631249,
+    "max_drawdown": 39.71761617591039,
+    "sharpe": 0.802833075507142
+  },
+  "xgboost_pick": {
+    "total_trades": 385,
+    "win_rate": 0.32727272727272727,
+    "avg_profit_per_trade": 3.229937073898148,
+    "total_pnl": 1243.525773450787,
+    "max_drawdown": 20.352241787604953,
+    "sharpe": 0.786947159099542
+  },
+  "xgboost_ev_m08": {
+    "total_trades": 381,
+    "win_rate": 0.16010498687664043,
+    "avg_profit_per_trade": 1.0261045587072297,
+    "total_pnl": 390.94583686745455,
+    "max_drawdown": 43.81087755684314,
+    "sharpe": 1.0367905498990961
   }
 }

@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from approaches.position_context import aggregate_bracket_position
-from shared import progress_log
+from shared import in_event_buy_warmup, progress_log
 
 DATA_DIR = ROOT / "data"
 RUN_BT_PHASES = 4
@@ -65,11 +65,15 @@ def run_backtest_for_approach(
     prices: pd.DataFrame,
     cooldown_hours: float = COOLDOWN_HOURS,
     min_price_change: float = MIN_PRICE_CHANGE,
+    get_signal=None,
 ) -> dict:
-    """Run backtest for one approach, return metrics and trade log."""
+    """Run backtest for one approach, return metrics and trade log.
+    If ``get_signal`` is provided (callable), it is used instead of ``get_approach(approach_name)``.
+    """
     from approaches import get_approach
 
-    get_signal = get_approach(approach_name)
+    if get_signal is None:
+        get_signal = get_approach(approach_name)
 
     closed = events[events["closed"] == True]
     trades = []
@@ -124,6 +128,29 @@ def run_backtest_for_approach(
                     if h.edge is not None:
                         all_bracket_edges[bracket] = h.edge
 
+            pick_ctx = None
+            if approach_name == "xgboost_pick":
+                from approaches.approach_xgboost_pick import build_pick_context
+
+                pick_rows = []
+                for _, m2 in mkts.iterrows():
+                    b2 = m2["bracket_range"]
+                    tid2 = m2["yes_token_id"]
+                    ph2 = get_price_history_up_to(prices, tid2, t)
+                    cp2 = get_price_at(prices, tid2, t)
+                    if cp2 is None or cp2 < 0.001:
+                        continue
+                    pick_rows.append(
+                        {
+                            "bracket": b2,
+                            "price_history": ph2,
+                            "current_price": cp2,
+                            "market_data": m2.to_dict(),
+                        }
+                    )
+                if pick_rows:
+                    pick_ctx = build_pick_context(pick_rows, start, end, t)
+
             for _, m in mkts.iterrows():
                 bracket = m["bracket_range"]
                 token_id = m["yes_token_id"]
@@ -150,6 +177,8 @@ def run_backtest_for_approach(
                 if approach_name == "bracket_spread":
                     kwargs["all_bracket_prices"] = all_bracket_prices
                     kwargs["all_brackets_sorted"] = all_brackets_sorted
+                if approach_name == "xgboost_pick":
+                    kwargs["pick_context"] = pick_ctx
                 signal = get_signal(**kwargs)
 
                 # Check sell for existing positions
@@ -174,7 +203,7 @@ def run_backtest_for_approach(
                         positions.pop(i)
 
                 # Check buy (with cooldown and min price change for re-entry)
-                if signal.buy:
+                if signal.buy and not in_event_buy_warmup(start, t):
                     key = (eid, bracket)
                     last_t = last_buy_times.get(key, 0)
                     last_p = last_buy_prices.get(key, curr_price)

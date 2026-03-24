@@ -2,6 +2,14 @@
 
 import re
 
+# No new buys in backtest/bot until this many hours after event start (YES prices unsettled).
+BLOCK_BUY_FIRST_HOURS = 24.0
+
+
+def in_event_buy_warmup(start_ts: float, current_ts: float) -> bool:
+    """True during the first ``BLOCK_BUY_FIRST_HOURS`` after ``start_ts`` — skip opening buys."""
+    return (current_ts - start_ts) < BLOCK_BUY_FIRST_HOURS * 3600.0
+
 
 def progress_log(
     script_id: str,

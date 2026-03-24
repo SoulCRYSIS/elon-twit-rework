@@ -1,0 +1,4 @@
+model,accuracy_pct,average_profit_usd,trades_per_month,total_trades,total_pnl,sharpe,note
+xgboost,20.56,1.3443,29.29,496,666.7687,0.8028,
+xgboost_pick,32.73,3.2299,22.73,385,1243.5258,0.7869,
+xgboost_ev_m08,16.01,1.0261,22.5,381,390.9458,1.0368,

@@ -1,0 +1,10 @@
+experiment,classifier,accuracy_pct,average_profit_usd,trades_per_month,total_trades
+hgb_baseline,hgb,48.7,6.2165,9.09,154
+xgb_ev_pnl_m08,xgboost,14.14,4.0201,11.69,198
+xgb_baseline,xgboost,20.95,1.2806,23.68,401
+xgb_pnl_only,xgboost,20.95,1.2806,23.68,401
+xgb_ev_pnl_m12,xgboost,11.63,1.2464,27.93,473
+hgb_ev_prec,hgb,16.22,1.0016,34.95,592
+hgb_ev_pnl,hgb,16.22,1.0016,34.95,592
+xgb_ev_prec,xgboost,11.35,0.8706,36.43,617
+xgb_ev_pnl,xgboost,11.35,0.8706,36.43,617

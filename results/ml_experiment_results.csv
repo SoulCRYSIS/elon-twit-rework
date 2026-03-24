@@ -1,0 +1,10 @@
+experiment,classifier,train_extra,ev_weighted,tune_on,edge_threshold,error,total_pnl,avg_profit_per_trade,total_trades,win_rate,sharpe,max_drawdown
+xgb_baseline,xgboost,,False,precision,0.5018613839149475,,513.5294,1.280622,401,0.2095,1.1558,82.1418
+xgb_ev_prec,xgboost,--ev-weighted --tune-on precision,True,precision,0.3826702485084534,,537.1727,0.87062,617,0.1135,0.5613,152.0937
+xgb_ev_pnl,xgboost,--ev-weighted --tune-on pnl,True,pnl,0.3826702485084534,,537.1727,0.87062,617,0.1135,0.5613,152.0937
+xgb_pnl_only,xgboost,--tune-on pnl,False,pnl,0.5018613839149475,,513.5294,1.280622,401,0.2095,1.1558,82.1418
+xgb_ev_pnl_m08,xgboost,--ev-weighted --tune-on pnl --max-buy-rate 0.08,True,pnl,0.6142072749137878,,795.9719,4.02006,198,0.1414,1.2451,35.9312
+xgb_ev_pnl_m12,xgboost,--ev-weighted --tune-on pnl --max-buy-rate 0.12,True,pnl,0.4739768433570862,,589.567,1.246442,473,0.1163,0.7074,124.6175
+hgb_baseline,hgb,--tune-on precision,False,precision,0.2489122325964952,,957.3358,6.216466,154,0.487,2.0209,41.875
+hgb_ev_prec,hgb,--ev-weighted --tune-on precision,True,precision,0.29642816081485623,,592.9227,1.001559,592,0.1622,0.6604,94.2241
+hgb_ev_pnl,hgb,--ev-weighted --tune-on pnl,True,pnl,0.29642816081485623,,592.9227,1.001559,592,0.1622,0.6604,94.2241

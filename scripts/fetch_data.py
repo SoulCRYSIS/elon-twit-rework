@@ -22,6 +22,9 @@ from shared import is_tweet_count_event, progress_log  # noqa: E402
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 CLOB_BASE = "https://clob.polymarket.com"
+# /prices-history returns 400 "startTs and endTs interval is too long" for windows > ~15 days.
+CLOB_PRICES_MAX_SPAN_SEC = 14 * 86400
+CLOB_CHUNK_OVERLAP_SEC = 3600
 DATA_DIR = _ROOT / "data"
 STEPS_TOTAL = 5
 
@@ -140,23 +143,65 @@ def extract_bracket_range(question: str) -> str | None:
     return None
 
 
+def _clob_prices_history_request(token_id: str, params: dict) -> list[dict]:
+    url = f"{CLOB_BASE}/prices-history"
+    resp = requests.get(url, params=params, timeout=30)
+    resp.raise_for_status()
+    return resp.json().get("history", [])
+
+
 def fetch_price_history(
     token_id: str,
     interval: str = "all",
     start_ts: int | None = None,
     end_ts: int | None = None,
 ) -> list[dict]:
-    """Fetch price history for a token from CLOB API."""
-    url = f"{CLOB_BASE}/prices-history"
-    params = {"market": token_id, "interval": interval}
+    """
+    Fetch price history for a token from CLOB API.
+
+    When ``start_ts`` and ``end_ts`` are set, the API rejects ranges longer than ~15 days;
+    we split into overlapping chunks and merge (dedupe by timestamp).
+    Bounded requests use ``interval=max`` (``interval=all`` + explicit bounds often 400s).
+    """
+    if start_ts is not None and end_ts is not None:
+        if end_ts <= start_ts:
+            return []
+        span = end_ts - start_ts
+        if span <= CLOB_PRICES_MAX_SPAN_SEC:
+            return _clob_prices_history_request(
+                token_id,
+                {
+                    "market": token_id,
+                    "startTs": start_ts,
+                    "endTs": end_ts,
+                    "interval": "max",
+                },
+            )
+        merged: dict[int, float] = {}
+        cur = start_ts
+        while cur < end_ts:
+            chunk_end = min(end_ts, cur + CLOB_PRICES_MAX_SPAN_SEC)
+            hist = _clob_prices_history_request(
+                token_id,
+                {
+                    "market": token_id,
+                    "startTs": cur,
+                    "endTs": chunk_end,
+                    "interval": "max",
+                },
+            )
+            for h in hist:
+                merged[int(h["t"])] = float(h["p"])
+            if chunk_end >= end_ts:
+                break
+            cur = chunk_end - CLOB_CHUNK_OVERLAP_SEC
+        return [{"t": t, "p": merged[t]} for t in sorted(merged)]
+    params: dict = {"market": token_id, "interval": interval}
     if start_ts is not None:
         params["startTs"] = start_ts
     if end_ts is not None:
         params["endTs"] = end_ts
-    resp = requests.get(url, params=params, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    return data.get("history", [])
+    return _clob_prices_history_request(token_id, params)
 
 
 def _event_ts_bounds(events_rows: list[dict]) -> dict[str, tuple[int, int]]:

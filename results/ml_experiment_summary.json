@@ -1,0 +1,55 @@
+{
+  "n_experiments": 9,
+  "best_by_avg_profit_per_trade": {
+    "experiment": "hgb_baseline",
+    "classifier": "hgb",
+    "train_extra": "--tune-on precision",
+    "ev_weighted": false,
+    "tune_on": "precision",
+    "edge_threshold": 0.2489122325964952,
+    "error": NaN,
+    "total_pnl": 957.3358,
+    "avg_profit_per_trade": 6.216466,
+    "total_trades": 154,
+    "win_rate": 0.487,
+    "sharpe": 2.0209,
+    "max_drawdown": 41.875
+  },
+  "best_by_total_pnl": {
+    "experiment": "hgb_baseline",
+    "classifier": "hgb",
+    "train_extra": "--tune-on precision",
+    "ev_weighted": false,
+    "tune_on": "precision",
+    "edge_threshold": 0.2489122325964952,
+    "error": NaN,
+    "total_pnl": 957.3358,
+    "avg_profit_per_trade": 6.216466,
+    "total_trades": 154,
+    "win_rate": 0.487,
+    "sharpe": 2.0209,
+    "max_drawdown": 41.875
+  },
+  "ranking_avg_profit": [
+    "hgb_baseline",
+    "xgb_ev_pnl_m08",
+    "xgb_baseline",
+    "xgb_pnl_only",
+    "xgb_ev_pnl_m12",
+    "hgb_ev_prec",
+    "hgb_ev_pnl",
+    "xgb_ev_prec",
+    "xgb_ev_pnl"
+  ],
+  "ranking_total_pnl": [
+    "hgb_baseline",
+    "xgb_ev_pnl_m08",
+    "hgb_ev_prec",
+    "hgb_ev_pnl",
+    "xgb_ev_pnl_m12",
+    "xgb_ev_prec",
+    "xgb_ev_pnl",
+    "xgb_baseline",
+    "xgb_pnl_only"
+  ]
+}

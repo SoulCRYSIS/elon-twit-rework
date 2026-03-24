@@ -82,3 +82,38 @@ def temporal_event_ids(df: pd.DataFrame, train_frac: float, val_frac: float):
     val_ids = set(ids[n_train : n_train + n_val])
     test_ids = set(ids[n_train + n_val :])
     return train_ids, val_ids, test_ids
+
+
+def random_event_train_val_split(
+    df: pd.DataFrame, train_frac: float, random_state: int = 42
+) -> tuple[set, set]:
+    """
+    Assign each event_id to train or validation at random (no row-level split — avoids same event in both).
+    ``train_frac`` of distinct events go to train; the rest to validation. No test set.
+    """
+    ev_ids = np.array(df["event_id"].unique(), dtype=object)
+    n = len(ev_ids)
+    if n < 2:
+        raise ValueError("need at least 2 events for train/val split")
+    rng = np.random.RandomState(random_state)
+    rng.shuffle(ev_ids)
+    n_train = int(round(n * train_frac))
+    n_train = max(1, min(n - 1, n_train))
+    train_ids = set(ev_ids[:n_train].tolist())
+    val_ids = set(ev_ids[n_train:].tolist())
+    return train_ids, val_ids
+
+
+def temporal_event_train_val_split(df: pd.DataFrame, train_frac: float) -> tuple[set, set]:
+    """Chronological by event end: earliest-ending ``train_frac`` of events → train, rest → val. No test."""
+    ev_meta = df.groupby("event_id").agg(end_ts=("end_ts", "max")).reset_index()
+    ev_meta = ev_meta.sort_values("end_ts")
+    n = len(ev_meta)
+    if n < 2:
+        raise ValueError("need at least 2 events for train/val split")
+    n_train = int(round(n * train_frac))
+    n_train = max(1, min(n - 1, n_train))
+    ids = ev_meta["event_id"].tolist()
+    train_ids = set(ids[:n_train])
+    val_ids = set(ids[n_train:])
+    return train_ids, val_ids
