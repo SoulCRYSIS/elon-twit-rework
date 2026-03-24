@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -42,6 +43,20 @@ CLOB_BASE = "https://clob.polymarket.com"
 GAMMA_SEARCH_Q = "elon musk tweets"
 GAMMA_SEARCH_LIMIT_PER_TYPE = 50
 MIN_EVENT_MARKETS = 5  # drop 2‑day / sparse stubs (working bot parity)
+
+# Monthly tweet-count slugs (e.g. elon-musk-of-tweets-may-2026) — out of scope vs ~weekly windows.
+_MONTH_YEAR_TWEET_SLUG = re.compile(
+    r"-(january|february|march|april|may|june|july|august|september|october|november|december|"
+    r"jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)-(20\d{2})$",
+    re.I,
+)
+
+
+def _is_monthly_scope_tweet_slug(slug: str) -> bool:
+    """True if slug is a calendar-month tweet market (…-may-2026), not a ~7d window."""
+    if not slug:
+        return False
+    return bool(_MONTH_YEAR_TWEET_SLUG.search(slug.strip()))
 
 
 def _event_log_suffix(eid, event: dict | None) -> str:
@@ -257,6 +272,8 @@ def _fetch_open_events_public_search(*, log_if_empty: bool) -> list[dict]:
         title = e.get("title", "") or ""
         if not is_tweet_count_event(slug, title):
             continue
+        if _is_monthly_scope_tweet_slug(slug):
+            continue
         days = _event_duration_days(e)
         if days is None or days < 6:
             continue
@@ -267,7 +284,7 @@ def _fetch_open_events_public_search(*, log_if_empty: bool) -> list[dict]:
             "bot",
             f"gamma public-search active q={GAMMA_SEARCH_Q!r}: API returned {n_search} event(s), "
             f"{len(hydrated)} after hydrate/dedupe → 0 passed "
-            f"(≥{MIN_EVENT_MARKETS} markets, Elon tweet-count, ≥6d window)",
+            f"(≥{MIN_EVENT_MARKETS} markets, Elon tweet-count, ≥6d window, exclude monthly slugs)",
         )
 
     return filtered
