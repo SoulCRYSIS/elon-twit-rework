@@ -1,0 +1,10 @@
+{
+  "ensemble_exit": {
+    "total_trades": 22,
+    "win_rate": 0.3181818181818182,
+    "avg_profit_per_trade": 0.2193033685788538,
+    "total_pnl": 4.824674108734784,
+    "max_drawdown": 2.0387579396585944,
+    "sharpe": 1.0978627305338267
+  }
+}

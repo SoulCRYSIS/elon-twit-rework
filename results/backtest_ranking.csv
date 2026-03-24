@@ -1,0 +1,4 @@
+event_id,bracket,buy_price,buy_time,sell_price,pnl,resolved,approach
+10559,0-59,0.0145,1714882252.912963,0.0,-0.9999999999999999,True,ranking
+10628,0-59,0.022,1715447039.960883,1.0,44.45454545454546,True,ranking
+10678,0-54,0.003,1716266959.271905,0.0,-1.0,True,ranking

@@ -1,0 +1,2 @@
+event_id,bracket,buy_price,buy_time,sell_price,pnl,resolved,approach
+10628,0-59,0.022,1715447039.960883,1.0,44.45454545454546,True,price_filter
