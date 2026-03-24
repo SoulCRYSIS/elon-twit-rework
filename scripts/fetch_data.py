@@ -18,7 +18,7 @@ import requests
 
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
-from shared import progress_log  # noqa: E402
+from shared import is_tweet_count_event, progress_log  # noqa: E402
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 CLOB_BASE = "https://clob.polymarket.com"
@@ -98,19 +98,6 @@ def fetch_events(verbose: bool = True) -> list[dict]:
         log(f"Gamma done: {len(all_events)} raw rows → {len(unique)} unique event IDs", step=1)
 
     return unique
-
-
-def is_tweet_count_event(slug: str, title: str = "") -> bool:
-    """Filter for Elon Musk tweet count events only."""
-    text = f"{slug} {title}".lower()
-    if "tweet" not in text:
-        return False
-    # Must be Elon Musk tweet count (exclude Trump, CZ, etc.)
-    return (
-        "elon-musk-of-tweets" in slug
-        or "of-elon-musk-tweets" in slug
-        or ("elon" in text and "musk" in text and ("of-tweets" in slug or "tweets" in slug))
-    )
 
 
 def is_7day_event(start_date: str, end_date: str) -> bool:

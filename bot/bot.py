@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from approaches.position_context import aggregate_bracket_position
-from shared import progress_log
+from shared import is_tweet_count_event, progress_log
 
 DATA_DIR = ROOT / "data"
 BOT_DIR = ROOT / "bot"
@@ -37,11 +37,29 @@ LEGACY_STATE_PATH = BOT_DIR / "state.json"
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 CLOB_BASE = "https://clob.polymarket.com"
+# Live discovery matches Polymarket UI: public-search indexes active Elon tweet windows
+# even when tag_slug=elon-musk /events omits them.
+GAMMA_SEARCH_Q = "elon musk tweets"
+GAMMA_SEARCH_LIMIT_PER_TYPE = 50
+MIN_EVENT_MARKETS = 5  # drop 2‑day / sparse stubs (working bot parity)
+
+
+def _event_log_suffix(eid, event: dict | None) -> str:
+    """Short event context for trade logs (id + slug when available)."""
+    parts = [f"event_id={eid}"]
+    if event is not None and str(event.get("id")) == str(eid):
+        slug = (event.get("slug") or "").strip()
+        if slug:
+            if len(slug) > 96:
+                slug = slug[:93] + "…"
+            parts.append(f"slug={slug}")
+    return " ".join(parts)
+
 
 INITIAL_BALANCE = 100.0
 AVG_POSITION_USD = 1.0
 POLL_INTERVAL_SEC = 300  # 5 min
-MAX_OPEN_POSITIONS = 20
+MAX_OPEN_POSITIONS = 50
 COOLDOWN_HOURS = 6
 MIN_PRICE_CHANGE = 1.0
 DEFAULT_APPROACH = "xgboost"
@@ -153,50 +171,152 @@ def should_run_daily_train(state: dict) -> bool:
     return state.get("last_daily_train_date") != today
 
 
-def fetch_events(closed: bool = False) -> list[dict]:
-    all_events = []
+def _gamma_fetch_events_paginated(base_params: dict) -> list[dict]:
+    """GET /events with limit/offset until empty (used for closed events / resolution)."""
+    out: list[dict] = []
+    limit = 100
     offset = 0
-    limit = 50
-
+    closed = base_params.get("closed", "false")
     while True:
-        resp = requests.get(
-            f"{GAMMA_BASE}/events",
-            params={"tag_slug": "elon-musk", "closed": str(closed).lower(), "limit": limit, "offset": offset},
-            timeout=30,
-        )
+        params = {**base_params, "limit": limit, "offset": offset, "closed": closed}
+        resp = requests.get(f"{GAMMA_BASE}/events", params=params, timeout=30)
         resp.raise_for_status()
-        events = resp.json()
-        if not events:
+        chunk = resp.json()
+        if not chunk:
             break
-        all_events.extend(events)
-        if len(events) < limit:
+        out.extend(chunk)
+        if len(chunk) < limit:
             break
         offset += limit
         time.sleep(0.2)
+    return out
 
-    filtered = []
-    for e in all_events:
-        slug = e.get("slug", "").lower()
-        title = e.get("title", "").lower()
-        if "tweet" not in slug and "tweet" not in title:
+
+def _event_duration_days(e: dict) -> int | None:
+    try:
+        start_dt = datetime.fromisoformat(e["startDate"].replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(e["endDate"].replace("Z", "+00:00"))
+        return (end_dt - start_dt).days
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
+def _hydrate_event_by_slug(e: dict, min_markets: int) -> dict | None:
+    """Full /events?slug= payload when search hits are missing enough markets."""
+    slug = e.get("slug")
+    if not slug:
+        return None
+    mkts = e.get("markets") or []
+    if len(mkts) >= min_markets:
+        return e
+    resp = requests.get(f"{GAMMA_BASE}/events", params={"slug": slug}, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    if isinstance(data, list) and data:
+        return data[0]
+    if isinstance(data, dict) and data.get("id"):
+        return data
+    return None
+
+
+def _fetch_open_events_public_search(*, log_if_empty: bool) -> list[dict]:
+    """
+    Active Elon tweet windows: Gamma public-search + optional /events?slug= hydrate.
+    Same pattern as working Polymarket bots (public-search indexes what /events tags omit).
+    """
+    resp = requests.get(
+        f"{GAMMA_BASE}/public-search",
+        params={
+            "q": GAMMA_SEARCH_Q,
+            "limit_per_type": GAMMA_SEARCH_LIMIT_PER_TYPE,
+            "events_status": "active",
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    raw_events = resp.json().get("events") or []
+    n_search = len(raw_events)
+
+    seen_ids: set = set()
+    hydrated: list[dict] = []
+    for e in raw_events:
+        full = _hydrate_event_by_slug(e, MIN_EVENT_MARKETS)
+        if not full:
             continue
-        start = e.get("startDate", "")
-        end = e.get("endDate", "")
-        try:
-            from datetime import datetime as dt
+        eid = full.get("id")
+        if eid is None or eid in seen_ids:
+            continue
+        seen_ids.add(eid)
+        hydrated.append(full)
 
-            start_dt = dt.fromisoformat(start.replace("Z", "+00:00"))
-            end_dt = dt.fromisoformat(end.replace("Z", "+00:00"))
-            if (end_dt - start_dt).days < 6:
-                continue
-        except (ValueError, TypeError):
+    filtered: list[dict] = []
+    for e in hydrated:
+        if len(e.get("markets") or []) < MIN_EVENT_MARKETS:
+            continue
+        slug = e.get("slug", "") or ""
+        title = e.get("title", "") or ""
+        if not is_tweet_count_event(slug, title):
+            continue
+        days = _event_duration_days(e)
+        if days is None or days < 6:
             continue
         filtered.append(e)
+
+    if log_if_empty and not filtered:
+        progress_log(
+            "bot",
+            f"gamma public-search active q={GAMMA_SEARCH_Q!r}: API returned {n_search} event(s), "
+            f"{len(hydrated)} after hydrate/dedupe → 0 passed "
+            f"(≥{MIN_EVENT_MARKETS} markets, Elon tweet-count, ≥6d window)",
+        )
+
+    return filtered
+
+
+def fetch_events(closed: bool = False, *, log_if_empty: bool = False) -> list[dict]:
+    """
+    Open: Gamma public-search (active) + /events?slug= hydrate — matches live Polymarket discovery.
+    Closed: merged /events feeds (elon-musk + twitter) for broad resolution coverage.
+    """
+    if not closed:
+        return _fetch_open_events_public_search(log_if_empty=log_if_empty)
+
+    flag = str(closed).lower()
+    raw: list[dict] = []
+    for tag in ["elon-musk", "twitter"]:
+        raw.extend(_gamma_fetch_events_paginated({"tag_slug": tag, "closed": flag}))
+
+    seen: set = set()
+    unique: list[dict] = []
+    for e in raw:
+        eid = e.get("id")
+        if eid is None or eid in seen:
+            continue
+        seen.add(eid)
+        unique.append(e)
+
+    filtered: list[dict] = []
+    for e in unique:
+        slug = e.get("slug", "") or ""
+        title = e.get("title", "") or ""
+        if not is_tweet_count_event(slug, title):
+            continue
+        days = _event_duration_days(e)
+        if days is None or days < 6:
+            continue
+        filtered.append(e)
+
+    if log_if_empty and not filtered:
+        progress_log(
+            "bot",
+            f"gamma closed: merged {len(unique)} unique event(s) (elon-musk + twitter) → 0 after filters",
+        )
+
     return filtered
 
 
 def fetch_active_events() -> list[dict]:
-    return fetch_events(closed=False)
+    return fetch_events(closed=False, log_if_empty=True)
 
 
 def parse_outcome_prices(raw) -> list[float]:
@@ -301,7 +421,11 @@ def run_loop(live: bool, approach: str) -> None:
                         buy_ts=buy_ts,
                     )
                     state["positions"].remove(pos)
-                    progress_log("bot", f"  resolved {pos['bracket']} @ {resolved_price:.2f} PnL=${pnl:.2f}")
+                    progress_log(
+                        "bot",
+                        f"  resolved {_event_log_suffix(pos['event_id'], ev)} bracket={pos['bracket']} "
+                        f"@ {resolved_price:.2f} PnL=${pnl:.2f}",
+                    )
                     break
 
         events = fetch_active_events()
@@ -387,7 +511,10 @@ def run_loop(live: bool, approach: str) -> None:
                                 float(pos["shares"]),
                             )
                             if not res.ok:
-                                progress_log("bot", f"  LIVE SELL failed {bracket}: {res.message}")
+                                progress_log(
+                                    "bot",
+                                    f"  LIVE SELL failed {_event_log_suffix(eid, event)} bracket={bracket}: {res.message}",
+                                )
                                 continue
                         state["balance"] = float(state["balance"]) + pnl
                         _append_trade(
@@ -401,7 +528,11 @@ def run_loop(live: bool, approach: str) -> None:
                             extra={"live_fill": live},
                         )
                         state["positions"].pop(i)
-                        progress_log("bot", f"  sold {bracket} @ {current_price:.3f} PnL=${pnl:.2f}")
+                        progress_log(
+                            "bot",
+                            f"  sold {_event_log_suffix(eid, event)} bracket={bracket} "
+                            f"@ {current_price:.3f} PnL=${pnl:.2f}",
+                        )
 
                 if signal.buy and float(state["balance"]) >= AVG_POSITION_USD and current_price >= 0.01:
                     if len(state["positions"]) >= MAX_OPEN_POSITIONS:
@@ -428,7 +559,10 @@ def run_loop(live: bool, approach: str) -> None:
 
                         res = market_buy_yes(str(token_id), float(current_price), float(shares))
                         if not res.ok:
-                            progress_log("bot", f"  LIVE BUY failed {bracket}: {res.message}")
+                            progress_log(
+                                "bot",
+                                f"  LIVE BUY failed {_event_log_suffix(eid, event)} bracket={bracket}: {res.message}",
+                            )
                             continue
 
                     state["balance"] = float(state["balance"]) - size
@@ -455,7 +589,11 @@ def run_loop(live: bool, approach: str) -> None:
                         pnl=-size,
                         buy_ts=buy_iso,
                     )
-                    progress_log("bot", f"  bought {bracket} @ {current_price:.3f} size=${size:.2f}")
+                    progress_log(
+                        "bot",
+                        f"  bought {_event_log_suffix(eid, event)} bracket={bracket} "
+                        f"@ {current_price:.3f} size=${size:.2f}",
+                    )
 
         save_state(live, state)
         progress_log(

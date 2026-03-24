@@ -1,9 +1,0 @@
-{
-  "balance": 100.0,
-  "positions": [],
-  "trade_history": [],
-  "last_retrain": "2026-03-24T10:11:11.041450",
-  "approach": "xgboost",
-  "last_buy_times": {},
-  "last_buy_prices": {}
-}

@@ -18,6 +18,18 @@ def progress_log(
     print(f"{prefix} {message}", flush=True)
 
 
+def is_tweet_count_event(slug: str, title: str = "") -> bool:
+    """True for Elon Musk *tweet count* markets (excludes other tweet-themed events)."""
+    text = f"{slug} {title}".lower()
+    if "tweet" not in text:
+        return False
+    return (
+        "elon-musk-of-tweets" in slug
+        or "of-elon-musk-tweets" in slug
+        or ("elon" in text and "musk" in text and ("of-tweets" in slug or "tweets" in slug))
+    )
+
+
 def extract_bracket_range(question: str) -> str | None:
     """Extract bracket range from market question."""
     m = re.search(r"(\d+)\s*[-–]\s*(\d+)", question)
