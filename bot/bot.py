@@ -5,7 +5,7 @@ Live trading bot for Elon Musk 7-day tweet count markets.
 - Default: xgboost, dry-run, $100 start, state in bot/state_dry_xgboost.json (legacy bot/state_dry.json migrates once)
 - Multi dry-run: --approach xgboost,xgboost_pick,xgboost_ev_m08 → separate state_dry_<name>.json per model
 - Live: --live, state in bot/state_live.json (requires Polymarket CLOB env vars)
-- Retrain: fetch_data + train_ml_model once per local calendar day (first loop after midnight)
+- Retrain: fetch_data + train_ml_model at most every 7 local calendar days (from last successful run)
 - Max 20 open positions; state persists positions/balance/history across restarts
 
 Run 24/7: use systemd, pm2, or `nohup python bot/bot.py &` (see bot/README.md).
@@ -43,6 +43,10 @@ CLOB_BASE = "https://clob.polymarket.com"
 # even when tag_slug=elon-musk /events omits them.
 GAMMA_SEARCH_Q = "elon musk tweets"
 GAMMA_SEARCH_LIMIT_PER_TYPE = 50
+
+# Throttle resolve debug lines so polls do not spam logs.
+_last_resolve_missing_gamma_log_ts = 0.0
+_RESOLVE_MISSING_GAMMA_LOG_INTERVAL_SEC = 600.0
 MIN_EVENT_MARKETS = 5  # drop 2‑day / sparse stubs (working bot parity)
 
 # Monthly tweet-count slugs (e.g. elon-musk-of-tweets-may-2026) — out of scope vs ~weekly windows.
@@ -74,11 +78,12 @@ def _event_log_suffix(eid, event: dict | None) -> str:
 
 INITIAL_BALANCE = 100.0
 AVG_POSITION_USD = 1.0
-POLL_INTERVAL_SEC = 900  # 15 min
+POLL_INTERVAL_SEC = 1800  # 15 min
 MAX_OPEN_POSITIONS = 50
-COOLDOWN_HOURS = 6
-MIN_PRICE_CHANGE = 1.0
-DEFAULT_APPROACH = "xgboost"
+COOLDOWN_HOURS = 12
+RETRAIN_INTERVAL_DAYS = 7
+MIN_PRICE_CHANGE = 2.0
+DEFAULT_APPROACH = "xgboost_live"
 
 
 def _approach_state_slug(approach: str) -> str:
@@ -220,8 +225,15 @@ def run_daily_training() -> bool:
 
 
 def should_run_daily_train(state: dict) -> bool:
-    today = date.today().isoformat()
-    return state.get("last_daily_train_date") != today
+    """True if we never trained or last successful train was >= RETRAIN_INTERVAL_DAYS ago (local date)."""
+    last = state.get("last_daily_train_date")
+    if not last:
+        return True
+    try:
+        last_d = date.fromisoformat(str(last))
+    except ValueError:
+        return True
+    return (date.today() - last_d).days >= RETRAIN_INTERVAL_DAYS
 
 
 def _gamma_fetch_events_paginated(base_params: dict) -> list[dict]:
@@ -382,6 +394,92 @@ def parse_outcome_prices(raw) -> list[float]:
     return [float(x) for x in raw] if raw else [0, 0]
 
 
+def fetch_gamma_event_by_id(event_id) -> dict | None:
+    """Single event from Gamma (works for active or closed; avoids missing tag-paginated closed feeds)."""
+    try:
+        resp = requests.get(
+            f"{GAMMA_BASE}/events",
+            params={"id": str(event_id)},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, list) and data:
+            return data[0]
+        if isinstance(data, dict) and data.get("id") is not None:
+            return data
+    except Exception as e:
+        progress_log("bot", f"warning: Gamma GET /events?id={event_id} failed: {e}")
+    return None
+
+
+def yes_payoff_if_settled(outcome_prices: list[float]) -> float | None:
+    """
+    Polymarket lists YES first in tweet-count outcomePrices.
+    Return 1.0 / 0.0 when resolved; None while UMA/oracle still ambiguous (do not cash out early).
+    """
+    if not outcome_prices:
+        return None
+    p_yes = float(outcome_prices[0])
+    p_no = float(outcome_prices[1]) if len(outcome_prices) > 1 else max(0.0, 1.0 - p_yes)
+    if p_yes >= 0.99 or (p_yes >= 0.97 and p_no <= 0.03):
+        return 1.0
+    if p_yes <= 0.01 or p_no >= 0.99:
+        return 0.0
+    return None
+
+
+def legacy_yes_payoff(outcome_prices: list[float]) -> float:
+    """Original rule: YES wins only if first outcome ≥ 0.99, else treat as loss."""
+    if not outcome_prices:
+        return 0.0
+    return 1.0 if float(outcome_prices[0]) >= 0.99 else 0.0
+
+
+def _event_end_timestamp(ev: dict) -> float | None:
+    raw = ev.get("endDate") or ev.get("end_date")
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        return dt.timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def _is_closed_flag(x) -> bool:
+    if x is True:
+        return True
+    if isinstance(x, str) and x.lower() in ("true", "1", "yes"):
+        return True
+    return False
+
+
+# After event end, allow legacy 0/1 rule if prices stay stuck (Polymarket delay).
+RESOLVE_LEGACY_GRACE_SEC = 36 * 3600
+
+
+def choose_resolve_payoff(
+    prices: list[float],
+    *,
+    ev: dict,
+    market: dict,
+    now_ts: float,
+) -> float | None:
+    """
+    Prefer clear settlement from prices; if still ambiguous, use legacy rule once event/market
+    is closed or we are past endDate + grace (so positions do not hang forever).
+    """
+    settled = yes_payoff_if_settled(prices)
+    if settled is not None:
+        return settled
+    end_ts = _event_end_timestamp(ev)
+    past_grace = end_ts is not None and now_ts >= end_ts + RESOLVE_LEGACY_GRACE_SEC
+    if _is_closed_flag(ev.get("closed")) or _is_closed_flag(market.get("closed")) or past_grace:
+        return legacy_yes_payoff(prices)
+    return None
+
+
 def _append_trade(
     state: dict,
     *,
@@ -449,49 +547,96 @@ def run_loop(live: bool, approaches: list[str]) -> None:
             for a in approaches:
                 save_state(live, a, states[a])
 
-        all_eids: set[str] = set()
+        pending_eids: set[str] = set()
         for a in approaches:
             for p in states[a].get("positions", []):
-                all_eids.add(str(p["event_id"]))
-        closed_events: list = []
-        if all_eids:
-            closed_events = [e for e in fetch_events(closed=True) if str(e["id"]) in all_eids]
-        closed_ids = {str(e["id"]) for e in closed_events}
+                pending_eids.add(str(p["event_id"]))
+
+        events_by_id: dict[str, dict] = {}
+        for eid in sorted(pending_eids):
+            ev = fetch_gamma_event_by_id(eid)
+            if ev:
+                events_by_id[eid] = ev
+            time.sleep(0.08)
+
+        resolve_ts = time.time()
+        missing_gamma = pending_eids - set(events_by_id.keys())
+        global _last_resolve_missing_gamma_log_ts
+        if missing_gamma and (
+            resolve_ts - _last_resolve_missing_gamma_log_ts >= _RESOLVE_MISSING_GAMMA_LOG_INTERVAL_SEC
+        ):
+            _last_resolve_missing_gamma_log_ts = resolve_ts
+            progress_log(
+                "bot",
+                "resolve: Gamma /events?id returned no event for "
+                f"{len(missing_gamma)} id(s): {', '.join(sorted(missing_gamma)[:12])}"
+                + (" …" if len(missing_gamma) > 12 else "")
+                + " — positions cannot clear until IDs match API (or network works).",
+            )
 
         for approach in approaches:
             state = states[approach]
             pfx = f"[{approach}] " if multi else ""
+            nomatch_log = state.setdefault("_resolve_nomatch_log_ts", {})
+            from shared import extract_bracket_range
+
             for pos in list(state["positions"]):
-                if str(pos.get("event_id")) not in closed_ids:
-                    continue
-                ev = next((e for e in closed_events if str(e["id"]) == str(pos["event_id"])), None)
+                eid = str(pos.get("event_id"))
+                ev = events_by_id.get(eid)
                 if not ev:
                     continue
+                br_pos = pos.get("bracket")
+                matched_market = None
                 for m in ev.get("markets", []):
-                    from shared import extract_bracket_range
+                    if extract_bracket_range(m.get("question", "")) != br_pos:
+                        continue
+                    matched_market = m
+                    break
 
-                    if extract_bracket_range(m.get("question", "")) == pos.get("bracket"):
-                        prices = parse_outcome_prices(m.get("outcomePrices", "[]"))
-                        resolved_price = 1.0 if (prices and prices[0] >= 0.99) else 0.0
-                        pnl = (resolved_price - pos["buy_price"]) * pos["shares"]
-                        state["balance"] = float(state["balance"]) + pnl
-                        buy_ts = pos.get("buy_time_iso") or pos.get("buy_ts")
-                        _append_trade(
-                            state,
-                            action="resolve",
-                            event_id=pos["event_id"],
-                            bracket=pos["bracket"],
-                            price=resolved_price,
-                            pnl=pnl,
-                            buy_ts=buy_ts,
-                        )
-                        state["positions"].remove(pos)
+                if matched_market is None:
+                    lk = f"{eid}:{br_pos}"
+                    last = float(nomatch_log.get(lk, 0.0))
+                    if resolve_ts - last >= 3600.0:
+                        nomatch_log[lk] = resolve_ts
+                        sample = [
+                            extract_bracket_range(x.get("question", ""))
+                            for x in (ev.get("markets") or [])[:24]
+                        ]
+                        sample = [x for x in sample if x]
                         progress_log(
                             "bot",
-                            f"  {pfx}resolved {_event_log_suffix(pos['event_id'], ev)} bracket={pos['bracket']} "
-                            f"@ {resolved_price:.2f} PnL=${pnl:.2f}",
+                            f"  {pfx}resolve: event {eid} no market for bracket={br_pos!r} "
+                            f"(parsed brackets sample: {sample[:10]}{'…' if len(sample) > 10 else ''})",
                         )
-                        break
+                    continue
+
+                prices = parse_outcome_prices(matched_market.get("outcomePrices", "[]"))
+                resolved_price = choose_resolve_payoff(
+                    prices,
+                    ev=ev,
+                    market=matched_market,
+                    now_ts=resolve_ts,
+                )
+                if resolved_price is None:
+                    continue
+                pnl = (resolved_price - pos["buy_price"]) * pos["shares"]
+                state["balance"] = float(state["balance"]) + pnl
+                buy_ts = pos.get("buy_time_iso") or pos.get("buy_ts")
+                _append_trade(
+                    state,
+                    action="resolve",
+                    event_id=pos["event_id"],
+                    bracket=pos["bracket"],
+                    price=resolved_price,
+                    pnl=pnl,
+                    buy_ts=buy_ts,
+                )
+                state["positions"].remove(pos)
+                progress_log(
+                    "bot",
+                    f"  {pfx}resolved {_event_log_suffix(pos['event_id'], ev)} bracket={pos['bracket']} "
+                    f"@ {resolved_price:.2f} PnL=${pnl:.2f}",
+                )
             save_state(live, approach, state)
 
         events = fetch_active_events()

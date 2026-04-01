@@ -1,0 +1,11 @@
+{
+  "balance": 100.0,
+  "positions": [],
+  "trade_history": [],
+  "last_daily_train_date": "2026-03-24",
+  "approach": "xgboost",
+  "last_buy_times": {},
+  "last_buy_prices": {},
+  "live": false,
+  "initial_balance": 100.0
+}
